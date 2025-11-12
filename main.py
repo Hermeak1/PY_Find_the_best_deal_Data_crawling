@@ -3,17 +3,15 @@ import re
 from bs4 import BeautifulSoup
 
 def parse_price(s):
-    """가격 문자열에서 숫자만 추출"""
     n = re.sub(r"[^\d]", "", s or "")
     return int(n) if n else None
 
 def crawl_danawa_gpu(keyword, limit=20):
-    """다나와 그래픽카드(VGA) 카테고리 내에서 키워드 검색"""
     base_url = "https://search.danawa.com/dsearch.php"
     params = {
         "query": keyword,
         "tab": "main",
-        "cate": "112753",  # 그래픽카드 카테고리 고정 (VGA)
+        "cate": "112753", 
     }
 
     headers = {
