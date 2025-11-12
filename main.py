@@ -1,89 +1,97 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
-import json
-import time
-from urllib.parse import quote
+import requests
+import re
+from bs4 import BeautifulSoup
 
+def parse_price(s):
+    """가격 문자열에서 숫자만 추출"""
+    n = re.sub(r"[^\d]", "", s or "")
+    return int(n) if n else None
 
-options = webdriver.ChromeOptions()
-options.add_argument("--headless")
-options.add_argument("--no-sandbox")
-options.add_argument("--disable-dev-shm-usage")
-options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.190 Safari/537.36")
-options.add_argument("--disable-blink-features=AutomationControlled")  # 자동화 탐지를 방지
+def crawl_danawa_gpu(keyword, limit=20):
+    """다나와 그래픽카드(VGA) 카테고리 내에서 키워드 검색"""
+    base_url = "https://search.danawa.com/dsearch.php"
+    params = {
+        "query": keyword,
+        "tab": "main",
+        "cate": "112753",  # 그래픽카드 카테고리 고정 (VGA)
+    }
 
-driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://search.danawa.com/",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
 
-# 검색어 및 링크
-query = "RTX5090"
-encoded_query = quote(query)  # 한글 URL 인코딩
-url = f"https://search.shopping.naver.com/ns/search?query={encoded_query}"
+    print(f"\n'{keyword}' 검색 중...\n")
 
-print(f"검색 URL: {url}")
-driver.get(url)
+    r = requests.get(base_url, params=params, headers=headers, timeout=10)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
 
-for _ in range(3):
-    driver.execute_script("window.scrollBy(0, 1000);")
-    time.sleep(2)
-
-# 데드락이나 무한 로딩에 빠지지않게
-try:
-    (WebDriverWait(driver, 20).until(
-        EC.presence_of_all_elements_located((By.CSS_SELECTOR, "a.basicProductCard_link__urzND, a.miniProductCard_link__1X65D"))
-    ))
-except:
-    print("⏳ 상품이 로드되지 않음. 크롤링 중단.")
-    driver.quit()
-    exit()
-
-products = driver.find_elements(By.CSS_SELECTOR, "a.basicProductCard_link__urzND, a.miniProductCard_link__1X65D")
-product_list = []
-
-for product in products[:10]:  # 검색할 프러덕트 갯수
-    try:
-        # 광고 제거
-        if "adcr.naver.com" in product.get_attribute("href"):
-            print("광고 상품 스킵!!!!")
+    items = []
+    for li in soup.select("div.main_prodlist ul.product_list > li"):
+        # 광고/렌탈/악세사리 제외
+        if li.select_one(".ad_header, .ad_info"):
             continue
 
-        # 제품 페이지 URL 긁어옴
-        data_shp_contents_dtl = product.get_attribute("data-shp-contents-dtl")
-        data_json = json.loads(data_shp_contents_dtl)
+        a = li.select_one("p.prod_name a, a.click_log_product_standard_title_")
+        price_el = li.select_one(".price_sect strong, .price_real, .price_sect .num")
 
-        name = next((item["value"] for item in data_json if item["key"] == "prod_nm"), "상품명 없음")
-        price = next((item["value"] for item in data_json if item["key"] == "price"), "0")
-        link = next((item["value"] for item in data_json if item["key"] == "click_url"), product.get_attribute("href"))  # 올바른 제품 링크 가져오기
-
-        price = int(price.replace(",", ""))  # 가격을 정수로 변환
-
-        # "렌탈"이 포함된 단어 제외
-        if "렌탈" in name:
-            print(f" '{name}' (렌탈 상품 제외됨!)")
+        if not a or not price_el:
             continue
 
-        print(f"상품명: {name}")
-        print(f"가격: {price:,}원")
-        print(f"링크: {link}")
-        print("-" * 50)
+        name = a.get_text(strip=True)
+        price = parse_price(price_el.get_text(" ", strip=True))
+        link = a.get("href") or ""
 
-        product_list.append({"name": name, "price": price, "link": link})
+        if not price:
+            continue
+        if any(bad in name for bad in ["렌탈", "지지대", "브라켓", "쿨러", "워터", "케이스"]):
+            continue
 
-    except Exception as e:
-        continue
+        items.append({"name": name, "price": price, "link": link})
+        if len(items) >= limit:
+            break
 
-driver.quit()
+    if not items:
+        print("검색 결과 없음 또는 구조 변경")
+        return None, []
 
-# 최저가 상품 찾기
-if product_list:
-    lowest_product = sorted(product_list, key=lambda x: x["price"])[0]
+    items.sort(key=lambda x: x["price"])
+    return items[0], items
 
-    print("\n 최저가 상품 (렌탈 상품 제외)")
-    print(f"상품명: {lowest_product['name']}")
-    print(f"가격: {lowest_product['price']:,}원")
-    print(f"구매 링크: {lowest_product['link']}")
-else:
-    print(" 검색 결과가 없습니다.")
+
+if __name__ == "__main__":
+    keyword = input("검색할 그래픽카드 모델명을 입력하세요 (예: RTX5090): ").strip()
+    if not keyword:
+        keyword = "RTX5090"
+
+    best, items = crawl_danawa_gpu(keyword, limit=20)
+
+    if best:
+        print("최저가 (렌탈 제외)")
+        print(f"상품명 : {best['name']}")
+        print(f"가격   : {best['price']:,}원")
+        print(f"링크   : {best['link']}")
+        print("-" * 60)
+        print("상위 5개 결과:")
+
+        for i, it in enumerate(items[:5], start=1):
+            print(f"{i}. {it['name']} - {it['price']:,}원")
+
+        try:
+            choice = int(input("\n열람할 상품 번호를 선택하세요 (1~5): "))
+            if 1 <= choice <= min(5, len(items)):
+                selected = items[choice - 1]
+                print("\n선택한 상품 링크:")
+                print(selected["link"])
+            else:
+                print("올바른 번호를 입력해주세요.")
+        except ValueError:
+            print("숫자를 입력해주세요.")
+    else:
+        print("검색 결과가 없습니다.")
